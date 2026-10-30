@@ -62,12 +62,17 @@ decode and 4–5x its prompt reading there. Both, with the method: [docs/benchma
 
 ## More cards (untested on hardware)
 
-It also builds for **four, six or eight** cards (`make FNX_NCARD=4`; `serve/sfnx-4card.json` for four): every layer in
-quarters, sixths or eighths by the same rule as two and three. Those are the counts the model's shapes allow: the
-attention's 24 query heads and the 48 recurrent value heads divide evenly, every card keeps at least one 32-value block
-of each expert's FF width, and every card can be a CUDA peer of every other (eight peers a card at most). Five and seven
-are refused at build time; twelve would leave some cards a single FF block and needs more peers than CUDA gives;
-twenty-four would leave some cards none.
+It also builds for **four, six or eight** cards (`make FNX_NCARD=4`; `serve/sfnx-4card.json` for four;
+`make FNX_NCARD=8` and `serve/sfnx-8card.json` for eight): every layer in quarters, sixths or eighths by the same rule
+as two and three. Those are the counts the model's shapes allow: the attention's 24 query heads and the 48 recurrent
+value heads divide evenly, every card keeps at least one 32-value block of each expert's FF width, and every card can
+be a CUDA peer of every other (eight peers a card at most). Five and seven are refused at build time; twelve would
+leave some cards a single FF block and needs more peers than CUDA gives; twenty-four would leave some cards none.
+
+Eight cards add hops to every sum between the cards (2n - 2 a sum, 96 sums a window). The eight-card config sets
+`FNX_RING_ORDER=auto` so those hops follow the fast links when NVLink does not join every pair; unset, the ring stays
+in PCI order, which is what two, three and four cards were measured with. The count is still a build setting
+(`FNX_NCARD`): the kernels are sized for one count. Default remains three.
 
 **Nobody has run these counts.** They compile, and two checks run on the CPU: the split rule reproduces the two- and
 three-card splits exactly and covers every head and FF block on every supported count (static checks in
@@ -116,7 +121,8 @@ sudo systemctl start sfnx    # ~80 s to load; the API is on port 8080
 
 `serve/run.sh` runs the same config as a transient unit on port 8095; `serve/run.sh serve/sfnx-q8.json` the Q8_0
 build. For two cards: `make FNX_NCARD=2 -j32 bin/sfnx`, then `serve/run.sh serve/sfnx-2card.json`; for four,
-`FNX_NCARD=4` and `serve/sfnx-4card.json` (a build refuses to start on any other number of cards). For RTX 3090s,
+`FNX_NCARD=4` and `serve/sfnx-4card.json`; for eight, `FNX_NCARD=8` and `serve/sfnx-8card.json` (a build refuses to
+start on any other number of cards). For RTX 3090s,
 `make ARCH=86` (llama.cpp's build too: a make stops if `llama.cpp/build` was made for another arch). A config of your own lives outside the checkout:
 `make install CONFIG=/etc/sfnx/sfnx.json` (or `~/sfnx.json`, any path) makes it the service's. Engine settings,
 and the files they read: [docs/config.md](docs/config.md).

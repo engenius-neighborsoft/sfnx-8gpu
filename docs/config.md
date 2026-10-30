@@ -14,6 +14,7 @@ lands off by default until the GPU checks pass ([docs/verification.md](verificat
 | `serve/sfnx-pool.json` | a check config: 32k context, `--spec 4`, `--lookup 7`, no env of its own — the arena is on, only the context is small |
 | `serve/sfnx-2card.json` | two cards (`"gpu": [0, 1]`), for an engine built with `make FNX_NCARD=2`: prod's settings without vision, a 32 GiB conversation cache, port 8095. The engine puts as many experts in RAM as the cards need at start; fp16 sums between the cards, slightly over the exactness bar (code KL 7.5e-4 against 6.1e-4, edit 7.1e-6 against 5.2e-6; the same top-1 as fp32) on two (`FNX_RING_F32=1`: fp32, within it and ~30% slower; [docs/benchmarks.md](benchmarks.md#two-cards-and-one-card)) |
 | `serve/sfnx-4card.json` | four cards (`"gpu": [0, 1, 2, 3]`), for an engine built with `make FNX_NCARD=4`: prod's settings with vision on card 3, a 32 GiB conversation cache, port 8095. Untested on hardware ([Card count](#card-count)) |
+| `serve/sfnx-8card.json` | eight cards (`"gpu": [0, 1, 2, 3, 4, 5, 6, 7]`), for an engine built with `make FNX_NCARD=8`: the four-card settings, vision on card 7, and `FNX_RING_ORDER=auto` so the ring follows the fast links. Untested on hardware ([Card count](#card-count)) |
 | `serve/sfnx.service.in` | the systemd unit's template: `make install` fills in the checkout (`@ROOT@`), the config (`@CONFIG@`: `serve/sfnx.json`, or `make install CONFIG=path`) and whoever runs it (`@USER@`, `@GROUP@`) and writes `/etc/systemd/system/sfnx.service`. It overrides the config's port with `--port 8080` |
 | `serve/run.sh [CONFIG]` | the same as a transient unit on the config's own port (8095 for `sfnx.json`), with `LimitMEMLOCK` raised |
 
@@ -70,6 +71,13 @@ K/V is dealt by position (blocks of 4 positions, card j % n) and the vocabulary 
 shorter, on every count.
 Validating a count: [docs/verification.md](verification.md#other-card-counts).
 
+Decode's sums and the attention merge write only to the next logical card (2n - 2 hops a sum, 96 sums a window). On eight
+V100s NVLink does not join every pair, and PCI order walks the slow ones, so `serve/sfnx-8card.json` sets
+`FNX_RING_ORDER=auto`. That keeps PCI order when every link has the same P2P rank (two, three and four cards, as
+measured) and otherwise picks a cycle whose worst hop is as fast as a cycle can be. The four-card config does not set
+it. The order is fixed when the weights are placed: a lab holder started with another value refuses the worker until
+`tools/lab.sh unload` and `start` again.
+
 ## Engine settings
 
 The ones that change results or are worth knowing. The rest are kernel-level tuning knobs — `grep -rn 'FNX_' src tools`
@@ -108,6 +116,7 @@ The ones that change results or are worth knowing. The rest are kernel-level tun
 | Setting | Effect |
 | --- | --- |
 | `FNX_RING_F32=0` or `1` | decode's sums between cards as fp16 pairs (0) or fp32 (1); the prompt path's stay fp16. Default 0 on every count: fp32 costs ~30% of one request's decode on two cards (lab: new code 141 → 98 tok/s, prose 113 → 90). fp32 is the more exact: on three cards it takes the code prompt's KL from 5.75e-4 to 4.38e-4, both within the bar; on two, fp16 pairs leave code and edit slightly over the exactness bar (code KL 7.5e-4 against 6.1e-4, fp32 5.7e-4; edit 7.1e-6 against 5.2e-6, fp32 3.1e-6), with the same top-1 as fp32 on every prompt, so `exact base` there passes only with 1. Four, six and eight are unmeasured; each hop rounds a partial sum to f16 again, so their KL with 0 is the first thing to check |
+| `FNX_RING_ORDER` | which visible CUDA device is logical card 0, 1, …. Unset, `off` or `pci`: PCI order (the default; what two, three and four cards were measured with). `auto`: a cycle from `cudaDevP2PAttrPerformanceRank`, worst hop minimised, PCI order on a tie or when every rank is missing. `0,1,3,...`: that permutation. The engine prints the devices and, for `auto` or an explicit list, each hop's rank. A ring hop under half the fastest pair's kernel-store rate is warned after the link probe. `serve/sfnx-8card.json` sets `auto` |
 
 **Context past the trained 262,144**
 

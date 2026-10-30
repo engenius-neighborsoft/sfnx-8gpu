@@ -4,7 +4,7 @@
 #                   CONFIG=path runs that config instead of serve/sfnx.json (it may live outside the checkout)
 #   make test-bin   the test programs (bin/fnx_run, bin/batch_test, bin/cache_test, bin/sample_test, bin/gguf_test,
 #                   bin/topk_test, bin/sfnx_input_test, bin/batch_plan_test, bin/stage_test,
-#                   bin/pf_ring_plan_test, bin/rope_test, bin/card_check_test)
+#                   bin/pf_ring_plan_test, bin/rope_test, bin/card_check_test, bin/ring_order_test)
 #   make ref        llama.cpp's reference tools (ref/fnx_ref, ref/fnx_logref, ref/img_logref, ref/mmid_bench)
 #   make trace      the CUPTI kernel tracer for `tools/lab.sh trace` and the *_trace.sh scripts
 #   LLAMA=path      llama.cpp at a37cc46 somewhere other than ./llama.cpp
@@ -41,7 +41,7 @@ MAKEFLAGS += --no-builtin-rules
 .SUFFIXES:
 build: bin/sfnx bin/sfnx-vision
 test-bin: bin/fnx_run bin/batch_test bin/cache_test bin/sample_test bin/gguf_test bin/topk_test bin/sfnx_input_test bin/batch_plan_test \
-          bin/stage_test bin/pf_ring_plan_test bin/rope_test bin/card_check_test
+          bin/stage_test bin/pf_ring_plan_test bin/rope_test bin/card_check_test bin/ring_order_test
 CONFIG ?= serve/sfnx.json
 # The config is checked as the front end checks it before loading anything (front.check_config), so a config it would
 # refuse stops the install rather than a boot; what needs the model (the context against its trained length) the engine
@@ -108,6 +108,9 @@ bin/rope_test: tools/rope_test.cpp src/rope.hpp
 # the start-up card checks against real cards' numbers and sysfs text, on the CPU alone
 bin/card_check_test: tools/card_check_test.cpp src/card_check.hpp src/peer_probe.hpp src/model.hpp src/card_split.hpp src/gguf.hpp build/ncard
 	mkdir -p bin && g++-14 -O2 -std=c++17 -Wall -DFNX_NCARD=$(FNX_NCARD) -o $@ tools/card_check_test.cpp
+# the ring's device order, on the CPU alone
+bin/ring_order_test: tools/ring_order_test.cpp src/ring_order.hpp
+	mkdir -p bin && g++-14 -O2 -std=c++17 -Wall -o $@ tools/ring_order_test.cpp
 
 # one object per source in build/ (headers tracked by nvcc's own dependency files), so a change recompiles only the
 # objects it touches; every engine program and the lab's library link the same objects (position independent).
@@ -169,7 +172,7 @@ lab: bin/fnx_lab bin/fnx_hold build/libfnx_lab.so
 # (tools/lab_proto.hpp). A new hash names a new stamp file, which rebuilds both objects. A count other than 3 joins the
 # hash (a two-card worker refuses a three-card holder); three cards' hash is the sources' alone, so prod's holder
 # stamp follows only the loader's code
-LOADER_SRC := src/model.cpp src/model.hpp src/card_split.hpp src/gguf.cpp src/gguf.hpp src/store.cpp src/store.hpp tools/lab_proto.hpp
+LOADER_SRC := src/model.cpp src/model.hpp src/card_split.hpp src/gguf.cpp src/gguf.hpp src/store.cpp src/store.hpp src/ring_order.hpp tools/lab_proto.hpp
 $(if $(filter-out $(wildcard $(LOADER_SRC)),$(LOADER_SRC)),$(error loader sources missing: $(filter-out $(wildcard $(LOADER_SRC)),$(LOADER_SRC))))
 LOADER_REV := $(shell { cat $(LOADER_SRC); [ $(FNX_NCARD) = 3 ] || echo ncard $(FNX_NCARD); } | sha1sum | cut -c1-16)
 build/loader_rev.$(LOADER_REV):

@@ -85,7 +85,13 @@ nobody here has the cards. Checked without them, on the CPU:
   hand-written code ran, and on every supported count the cards' steps run against each other complete eight sums in
   a row over the two buffer sets and the sequence-numbered flags, in 500 random interleavings: every part holding
   every card's addend once, nothing read before the flag that covers it for its sum, no slot written over before the
-  sum before had read it, without a deadlock.
+  sum before had read it, without a deadlock;
+- the ring's device order (`bin/ring_order_test`): PCI order unless `FNX_RING_ORDER` asks otherwise; `auto` keeps a
+  DGX-1 V100's double-link cycle (every hop the best rank) and a three-card reversal that avoids one slow hop, and
+  stays on PCI order when every rank is the same. A kernel-store hop under half the fastest pair is named.
+
+The lab holder's device and host locations are two per card (`src/store.hpp`). The table holds 16, which is eight
+cards; a shorter one aliases a host location onto the next field, so six and eight cards could not be held.
 
 Not checked anywhere: the decode ring and the attention merge on more than three cards. They are the same loops on
 every count (n - 1 hops to reduce, n - 1 to spread), run so far with n = 2 and 3. Nor speed: each sum takes 2n - 2
@@ -95,12 +101,19 @@ To validate count n (n cards, `iommu=pt` or the IOMMU off, and peer access betwe
 [docs/config.md](config.md#boot-requirement)), with nothing else on the cards:
 
 1. Build: `FNX_NCARD=n make -j lab bin/sfnx test-bin ref`. The CPU checks: `bin/pf_ring_plan_test`,
-   `bin/batch_plan_test`, `bin/sfnx_input_test`, `bin/card_check_test`, `tools/build_guards_check.sh`.
+   `bin/batch_plan_test`, `bin/sfnx_input_test`, `bin/card_check_test`, `bin/ring_order_test`,
+   `tools/build_guards_check.sh`.
 2. llama.cpp's references, before the lab takes the cards: `ref/fnx_logref MODEL ref/P.bin STEPS ref/lgr/llama_cuda_P.lgr`
    with MODEL the UD-Q4_K_XL GGUF's first shard, for code1 and edit1 (300 steps) and long64 (200). `exact` prints the
    command for any it misses; the picture's reference is in git.
 3. A lab directory of the count's own (its bases differ from three cards'), on every `lab.sh` call:
-   `export FNX_LAB_DIR=/tmp/fnx-lab-$UID-${n}card`, then `tools/lab.sh start`.
+   `export FNX_LAB_DIR=/tmp/fnx-lab-$UID-${n}card`, then `tools/lab.sh start`. Eight cards:
+   `tools/lab.sh start "" "-E FNX_RING_ORDER=auto"` so the ring follows the fast links (the holder places the weights
+   in that order; another value needs `unload` first). The log names each logical card's CUDA device and, with
+   `auto`, each hop's P2P rank; the link probe then prints GB/s, and a ring hop under half the fastest pair is a
+   warning. `nvidia-smi topo -m` is the picture those ranks came from. If `auto` keeps PCI order while that matrix
+   shows faster pairs, set the cycle by hand — on a DGX-1 V100 the double links are
+   `FNX_RING_ORDER=0,3,2,1,5,6,7,4`, which is that mesh and not a substitute for reading the machine's own matrix.
 4. `tools/lab.sh exact base`: logits against llama.cpp on long64, code1, edit1 and the picture. It writes a base only
    when every prompt is within the bar: KL mean at most 1.25x llama.cpp's own CPU-against-CUDA KL for code1, edit1 and
    the picture (1.0x for long64), top-1 at most 1.5 points under it.
@@ -109,10 +122,19 @@ To validate count n (n cards, `iommu=pt` or the IOMMU off, and peer access betwe
    GPUs' use).
 6. If step 4 fails on KL alone: fp32 sums in a directory of their own, to tell the ring's rounding from a real fault.
    `tools/lab.sh unload`, then with `FNX_LAB_DIR=/tmp/fnx-lab-$UID-${n}card-fp32`:
-   `tools/lab.sh start "" "-E FNX_RING_F32=1"` and `exact base`. Two cards need this to pass step 4.
-7. Through the front end, `tools/lab.sh unload` first (four cards: `serve/sfnx-4card.json`; another count: a copy with
-   its `"gpu"` list and vision card): `serve/run.sh serve/sfnx-4card.json`, then `serve/api_smoke.py
-   http://127.0.0.1:8095` and `serve/image_test.py http://127.0.0.1:8095/v1`.
+   `tools/lab.sh start "" "-E FNX_RING_F32=1"` and `exact base`. Two cards need this to pass step 4. Eight cards
+   keep the ring order on that line too: `"-E FNX_RING_F32=1 -E FNX_RING_ORDER=auto"`.
+7. Through the front end, `tools/lab.sh unload` first. Four cards: `serve/run.sh serve/sfnx-4card.json`. Eight:
+   `serve/run.sh serve/sfnx-8card.json` (`FNX_RING_ORDER=auto` is in that config). Another count: a copy with its
+   `"gpu"` list and vision card. Then `serve/api_smoke.py http://127.0.0.1:8095` and
+   `serve/image_test.py http://127.0.0.1:8095/v1`.
+
+**Eight cards, speed, once `exact` passes.** Same prompts as `lab.sh decode` (edit1, code1 greedy; prose2 and code1s
+sampled), and a short prompt plus an ~8k prompt through the front end (512 forced output tokens, no prefix cache).
+Run `FNX_RING_ORDER=auto` and, in a second lab directory, unset, so the PCI ring is the control. Sample GPU use and
+power. Single-request decode is the number that has to beat the same prompts on four cards; eight concurrent short
+prompts are the aggregate. fp16 sums first. If KL fails and fp32 passes, the extra hops are the rounding the note
+above describes, and the speed to quote is whichever sum width `exact` holds to the bar.
 
 A failure in step 4 with the rest clean points at the arithmetic (the sums' precision, a split); a hang, a `ring` or
 `attn` error, or a timeout in the log at the transport (peer access, the IOMMU, a buffer sized for fewer cards).
