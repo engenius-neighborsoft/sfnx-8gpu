@@ -3,6 +3,7 @@
 #include "engine_impl.hpp"
 #include "env.hpp"
 #include "peer_probe.hpp"
+#include "ring_order.hpp"
 
 #include <cuda_runtime.h>
 #include <unistd.h>
@@ -144,7 +145,8 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         ck(cudaSetDevice(w.dev), "cudaSetDevice");
         for (int p = 0; p < NCARD; ++p)
             if (p != c) {
-                const cudaError_t e = cudaDeviceEnablePeerAccess(p, 0);
+                // p is a logical card: FNX_RING_ORDER can put it on a CUDA device other than p
+                const cudaError_t e = cudaDeviceEnablePeerAccess(m.cards[p].dev, 0);
                 if (e != cudaSuccess && e != cudaErrorPeerAccessAlreadyEnabled) ck(e, "peer access");
                 cudaGetLastError();
             }
@@ -279,7 +281,13 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
     {
         std::vector<int> devs;
         for (int c = 0; c < NCARD; ++c) devs.push_back(m.cards[c].dev);
-        for (const std::string& line : peer_report(probe_peer_stores(devs), NCARD)) std::fprintf(stderr, "%s\n", line.c_str());
+        const std::vector<PeerRate> rates = probe_peer_stores(devs);
+        for (const std::string& line : peer_report(rates, NCARD)) std::fprintf(stderr, "%s\n", line.c_str());
+        // logical order: the probe's from/to are indexes into devs, which is logical-card order, and the ring is
+        // logical card c -> c + 1. A PCIe hop beside NVLink is still several GB/s, over the probe's 1 GB/s line
+        std::vector<double> gbs((size_t) NCARD * NCARD, -1);
+        for (const PeerRate& p : rates) gbs[(size_t) p.from * NCARD + (size_t) p.to] = peer_gbs(p.us);
+        for (const std::string& line : ring_hop_warnings(gbs, NCARD)) std::fprintf(stderr, "%s\n", line.c_str());
     }
     for (int c = 0; c < NCARD; ++c) {
         cb_[c]->ring.next_in = cb_[(c + 1) % NCARD]->ring.in;

@@ -35,11 +35,14 @@ struct Store {
 
 private:
     std::vector<Chunk> chunks_;
-    uint64_t next_[8] = {};   // holder, per location: the next free address
-    uint64_t end_[8] = {};    // holder: the end of its mapped chunks; worker: of the holder's
-    uint64_t base_[8] = {};   // the location's range here
-    uint64_t hbase_[8] = {};  // worker: the location's range in the holder
-    bool reserved_[8] = {};
+    // device memory is location `card`, host memory near it is NCARD + card: two per card, eight cards at most
+    // (card_split.hpp). Fewer slots alias a host location onto the next field.
+    static constexpr int STORE_LOCS = 16;
+    uint64_t next_[STORE_LOCS] = {};   // holder, per location: the next free address
+    uint64_t end_[STORE_LOCS] = {};    // holder: the end of its mapped chunks; worker: of the holder's
+    uint64_t base_[STORE_LOCS] = {};   // the location's range here
+    uint64_t hbase_[STORE_LOCS] = {};  // worker: the location's range in the holder
+    bool reserved_[STORE_LOCS] = {};
     void* take(int loc, size_t bytes);
     void reserve(int loc, size_t bytes);
 };

@@ -93,7 +93,7 @@ done.
 | `lab.sh exact base` | writes a new base, only when every prompt passes; `MODEL-base.id` records the build | `NOT written`, exit 1 |
 | `lab.sh batch` | batched windows (with their drafts) give each lane its tokens alone | MISMATCH, exit 1 |
 | `bin/sample_test` | speculative sampling matches plain sampling in distribution | MISMATCH, exit 1 |
-| `bin/topk_test`, `bin/batch_plan_test`, `bin/sfnx_input_test`, `bin/pf_ring_plan_test`, `bin/rope_test`, `bin/card_check_test`, `tools/build_guards_check.sh` | the top-k ties, the batched row planner, the engine's stdin handling, the prompt path's ring steps on every supported count, YaRN's constants against ggml's, the card checks at load against real cards' numbers and sysfs, the link probe's report and failure text, the Makefile's checks of ARCH and FNX_NCARD (the last six CPU only) | non-zero exit |
+| `bin/topk_test`, `bin/batch_plan_test`, `bin/sfnx_input_test`, `bin/pf_ring_plan_test`, `bin/rope_test`, `bin/card_check_test`, `bin/ring_order_test`, `tools/build_guards_check.sh` | the top-k ties, the batched row planner, the engine's stdin handling, the prompt path's ring steps on every supported count, YaRN's constants against ggml's, the card checks at load against real cards' numbers and sysfs, the link probe's report and failure text, the ring's device order, the Makefile's checks of ARCH and FNX_NCARD (the last seven CPU only) | non-zero exit |
 | `serve/api_smoke.py`, `serve/image_test.py` | the API surface and pictures through the front end | `N failed` |
 | `.venv/bin/python -m pytest -q front/` | the front end (CPU only) | pytest |
 

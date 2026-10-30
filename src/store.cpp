@@ -76,6 +76,9 @@ void Store::reserve(int loc, size_t bytes) {
 }
 
 void* Store::take(int loc, size_t bytes) {
+    static_assert(2 * NCARD <= STORE_LOCS, "a card's device and host locations fit in Store");
+    if (loc < 0 || loc >= STORE_LOCS)
+        throw std::runtime_error("store: location " + std::to_string(loc) + " is past the " + std::to_string(STORE_LOCS) + " slots");
     reserve(loc, VA_RESERVE);
     bytes = (bytes + 255) / 256 * 256;
     if (next_[loc] + bytes > end_[loc]) {

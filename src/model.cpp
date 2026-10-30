@@ -1,6 +1,7 @@
 #include "model.hpp"
 #include "card_check.hpp"
 #include "env.hpp"
+#include "ring_order.hpp"
 #include "rope_gguf.hpp"
 
 #include "store.hpp"
@@ -104,6 +105,44 @@ void check_cards() {
         require_identity_iommu(dev, dir);
         if (!skip_bar1) check_bar1(dev, bdf, dir, prop);
     }
+}
+
+// directed P2P ranks (lower is faster). A pair whose attribute cannot be read is RING_RANK_NONE, slower than any real rank
+std::vector<int> p2p_ranks(int n) {
+    std::vector<int> r((size_t) n * n, 0);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            if (i == j) continue;
+            int rank = 0;
+            const cudaError_t e = cudaDeviceGetP2PAttribute(&rank, cudaDevP2PAttrPerformanceRank, i, j);
+            if (e != cudaSuccess) {
+                cudaGetLastError();
+                rank = RING_RANK_NONE;
+            }
+            r[(size_t) i * n + j] = rank;
+        }
+    return r;
+}
+
+struct ChosenRing {
+    RingOrderKind kind;
+    std::vector<int> phys;
+    std::vector<int> ranks;
+};
+// PCI order reads no ranks (two, three and four cards were measured that way). auto and an explicit order do, so the
+// log can say what each hop is
+ChosenRing choose_ring() {
+    const RingOrderRequest req = parse_ring_order(std::getenv("FNX_RING_ORDER"), NCARD);
+    ChosenRing c;
+    c.kind = req.kind;
+    if (req.kind == RingOrderKind::Pci) {
+        c.phys.resize(NCARD);
+        for (int i = 0; i < NCARD; ++i) c.phys[(size_t) i] = i;
+        return c;
+    }
+    c.ranks = p2p_ranks(NCARD);
+    c.phys = req.kind == RingOrderKind::Explicit ? req.phys : ring_order_auto(NCARD, c.ranks);
+    return c;
 }
 
 float f16_to_f32(uint16_t h) {
@@ -933,6 +972,10 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
                                      " of them, or build for " + std::to_string(ndev) + " (make FNX_NCARD=" + std::to_string(ndev) + ")");
         check_cards();
     }
+    // before the embeddings are read in: a bad FNX_RING_ORDER fails here, and the devices are fixed before any weight
+    // is placed (the holder records them; a worker that would choose others is refused below)
+    const ChosenRing ring = choose_ring();
+    std::fprintf(stderr, "%s\n", ring_order_message(ring.kind, ring.phys, ring.ranks).c_str());
     const std::string p = "qwen4exp.";
     if (g.i(p + "block_count") != NL || g.i(p + "embedding_length") != N || g.i(p + "expert_count") != NEXP ||
         g.i(p + "ssm.group_count") != NKH || g.i(p + "ssm.time_step_rank") != NVH || g.i(p + "attention.head_count") != NQH ||
@@ -1016,7 +1059,7 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
     const int vstep = (vocab + NCARD - 1) / NCARD;
     for (int c = 0; c < NCARD; ++c) {
         CardW& cw = cards[c];
-        cw.dev = c;
+        cw.dev = ring.phys[(size_t) c];
         cw.k0 = kparts[c][0];
         cw.nk = kparts[c][1];
         cw.vheads = vparts[c];
@@ -1033,6 +1076,9 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
         if (!image) throw std::runtime_error("fnx: attaching needs the holder's image");
         if (!store) throw std::runtime_error("fnx: attaching needs the store the holder's memory is mapped in");
         restore(*image, *store);
+        std::vector<int> holder(NCARD);
+        for (int c = 0; c < NCARD; ++c) holder[(size_t) c] = cards[c].dev;
+        if (holder != ring.phys) throw std::runtime_error(ring_order_mismatch(holder, ring.phys));
         place_experts();
         return;
     }
@@ -1237,6 +1283,7 @@ static_assert(sizeof(LayerW) == 952, "LayerW changed: put its new addresses in c
 std::string Model::image() const {
     Img m;
     m.put((uint32_t) 0x31474d49);   // "IMG1"
+    for (const CardW& c : cards) m.put(c.dev);   // FNX_RING_ORDER's devices: a worker that chose others is refused
     for (const CardW& cc : cards) {
         CardW& c = const_cast<CardW&>(cc);
         card_fields(c, [&](auto& v) { m.put(v); });
@@ -1252,6 +1299,7 @@ void Model::restore(const std::string& image, const Store& store) {
     uint32_t magic = 0;
     m.get(magic);
     if (magic != 0x31474d49) throw std::runtime_error("fnx: not a holder's image");
+    for (CardW& c : cards) m.get(c.dev);
     for (CardW& c : cards) {
         card_fields(c, [&](auto& v) { m.get(v); });
         m.get_vec(c.L);
